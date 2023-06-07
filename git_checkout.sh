@@ -24,10 +24,8 @@ perform_git_operations() {
     trap 'cd "$original_dir"' RETURN
 
     cd "$repo_dir" || { repo_output+=$(print_error "Cannot change to directory: $repo_dir"); failed_repos+=("$repo_dir"); return 1; }
-    repo_output+="\n"
 
     repo_output+=$(print_info "Processing repository in directory: $repo_dir")
-    repo_output+="\n"
 
     branch_name=$(git symbolic-ref -q HEAD)
     branch_name=${branch_name##refs/heads/}
@@ -36,18 +34,15 @@ perform_git_operations() {
     if [ "$branch_name" != "master" ]
     then
         git checkout master || { repo_output+=$(print_error "Cannot checkout to master in repository: $repo_dir"); failed_repos+=("$repo_dir"); return 1; }
-        repo_output+="\n"
         git pull || { repo_output+=$(print_error "Cannot pull latest changes from master branch in repository: $repo_dir"); failed_repos+=("$repo_dir"); return 1; }
-        repo_output+="\n"
     else
         repo_output+=$(print_info "Already on master branch")
-        repo_output+="\n"
         git pull || { repo_output+=$(print_error "Cannot pull latest changes from master branch in repository: $repo_dir"); failed_repos+=("$repo_dir"); return 1; }
-        repo_output+="\n"
     fi
 
-    printf "%s" "$repo_output"
+    printf "%b" "$repo_output\n"
 }
+
 
 # Export function so it's available in the subshell used by xargs
 export -f perform_git_operations
