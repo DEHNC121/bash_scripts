@@ -27,7 +27,14 @@ perform_git_operations() {
 
     repo_output+=$(print_info "Processing repository in directory: $repo_dir")
 
-    git pull || { repo_output+=$(print_error "Cannot pull latest changes in repository: $repo_dir"); failed_repos+=("$repo_dir"); return 1; }
+    # git pull &>/dev/null
+    git pull
+    if [ $? -ne 0 ]; then
+        repo_output+=$(print_error "Cannot pull latest changes in repository: $repo_dir")
+        failed_repos+=("$repo_dir")
+        printf "%b" "$repo_output\n"
+        return 1
+    fi
 
     printf "%b" "$repo_output\n"
 }
