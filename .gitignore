@@ -1,0 +1,13 @@
+# Ignore todo files in any directory
+*.todo
+*.TODO
+todo.txt
+TODO.txt
+
+# Ignore the entire todos directory
+/todos/
+
+# Ignore temporary files that might be created by editors
+*~
+.*.swp
+.*.swo 
