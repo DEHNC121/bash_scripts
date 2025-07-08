@@ -20,34 +20,22 @@ LAYOUT_FILE="$CONFIG_DIR/layout"
 # Create config directory if it doesn't exist
 mkdir -p "$CONFIG_DIR"
 
-# Default layout (2x2 grid)
-DEFAULT_LAYOUT=(
-    "split-window -v -p 50"
-    "split-window -h -p 50"
-    "select-pane -t 0"
-    "split-window -h -p 50"
-    "select-layout tiled"
-)
-
-# Cleanup function
-cleanup() {
-    local exit_code=$?
-    echo "Cleaning up..."
-    # Kill monitoring process if it exists
-    if [ -n "$MONITOR_PID" ] && kill -0 $MONITOR_PID 2>/dev/null; then
-        echo "Stopping connection monitor..."
-        kill $MONITOR_PID 2>/dev/null
-    fi
-    # Save layout before exit
-    if tmux has-session -t "$SESSION_NAME" 2>/dev/null; then
-        echo "Saving current layout..."
-        save_layout
-    fi
-    exit $exit_code
+# Function to create the default layout
+create_default_layout() {
+    # Start with a single pane
+    tmux new-session -d -s "$SESSION_NAME"
+    
+    # Split into four panes
+    tmux split-window -v -t "$SESSION_NAME:0.0"
+    tmux split-window -h -t "$SESSION_NAME:0.0"
+    tmux split-window -h -t "$SESSION_NAME:0.2"
+    
+    # Select tiled layout
+    tmux select-layout -t "$SESSION_NAME:0" tiled
+    
+    # Give tmux a moment to stabilize
+    sleep 1
 }
-
-# Set up trap for multiple signals
-trap cleanup EXIT SIGINT SIGTERM SIGHUP
 
 # Function to save current layout
 save_layout() {
@@ -92,24 +80,11 @@ check_host() {
 # Function to check if a pane is healthy
 check_pane_health() {
     local pane=$1
-    local port=${PORTS[$pane]}
-    if ! tmux capture-pane -t "$SESSION_NAME:0.$pane" -p | grep -q "\[xg118pro-csh.*\] #"; then
-        echo "Pane $pane (port $port) appears disconnected. Reconnecting..."
-        setup_telnet "$pane"
+    
+    if ! tmux capture-pane -t "$SESSION_NAME:0.$pane" -p 2>/dev/null | grep -q "\[xg118pro-csh.*\] #"; then
         return 1
     fi
     return 0
-}
-
-# Function to monitor all connections
-monitor_connections() {
-    while true; do
-        for i in {0..3}; do
-            check_pane_health "$i" &
-        done
-        wait
-        sleep 30
-    done
 }
 
 # Function to wait for telnet connection
@@ -117,7 +92,8 @@ wait_for_connection() {
     local pane=$1
     local retries=0
     while [ $retries -lt $MAX_RETRIES ]; do
-        if tmux capture-pane -t "$SESSION_NAME:0.$pane" -p | grep -q "\[xg118pro-csh:~\] #"; then
+        # Check for successful connection message or any prompt
+        if tmux capture-pane -t "$SESSION_NAME:0.$pane" -p | grep -q -E "Connected to.*Escape character is|>|\$|#|\[xg118pro-csh"; then
             sleep 1  # Give an extra second for the connection to stabilize
             return 0
         fi
@@ -133,20 +109,40 @@ setup_telnet() {
     local port=${PORTS[$pane]}
     local display_name=${DISPLAY_NAMES[$pane]}
     
+    # Verify pane exists before proceeding
+    if ! tmux list-panes -t "$SESSION_NAME:0" | grep -q "^$pane:"; then
+        echo "Error: Pane $pane does not exist"
+        return 1
+    fi
+    
+    echo "Connecting to $HOST:$port in pane $pane..."
     # Connect to telnet
     tmux send-keys -t "$SESSION_NAME:0.$pane" "telnet $HOST $port" C-m
     
     # Wait for connection
     if wait_for_connection "$pane"; then
-        # Clear any pending input
+        echo "Connection established in pane $pane"
+        # Send a carriage return to potentially trigger prompt
         tmux send-keys -t "$SESSION_NAME:0.$pane" C-m
-        # Set custom prompt with multiple attempts
+        sleep 1
+        
+        # Try to set custom prompt but don't fail if it doesn't work
+        echo "Attempting to set custom prompt for pane $pane..."
         for attempt in {1..3}; do
             tmux send-keys -t "$SESSION_NAME:0.$pane" "PS1='[xg118pro-csh-$display_name:~] # '" C-m
-            sleep 0.5
+            sleep 1
+            
+            # Check if custom prompt was set
+            if tmux capture-pane -t "$SESSION_NAME:0.$pane" -p | grep -q "\[xg118pro-csh-$display_name:~\] #"; then
+                echo "Custom prompt set successfully for pane $pane"
+                return 0
+            fi
         done
+        
+        echo "Warning: Could not set custom prompt for pane $pane, but connection is established"
         return 0
     fi
+    
     echo "Failed to setup telnet in pane $pane"
     return 1
 }
@@ -154,21 +150,8 @@ setup_telnet() {
 # Function to check and recover session
 check_session() {
     if tmux has-session -t "$SESSION_NAME" 2>/dev/null; then
-        echo "Found existing session. Checking health..."
-        local unhealthy=0
-        for i in {0..3}; do
-            if ! check_pane_health "$i"; then
-                unhealthy=1
-            fi
-        done
-        if [ $unhealthy -eq 0 ]; then
-            echo "Existing session is healthy. Reusing it."
-            return 0
-        else
-            echo "Session needs recovery. Recreating..."
-            tmux kill-session -t "$SESSION_NAME"
-            return 1
-        fi
+        echo "Found existing session. Attempting to attach..."
+        return 0
     fi
     return 1
 }
@@ -188,41 +171,41 @@ if [ -n "$TMUX" ]; then
     tmux detach-client
 fi
 
-# Check existing session
-if ! check_session; then
-    # Create new tmux session
+# Check existing session or create new one
+if check_session; then
+    echo "Reusing existing session..."
+else
+    # Create new tmux session with layout
     echo "Creating new tmux session..."
-    tmux new-session -d -s "$SESSION_NAME"
+    create_default_layout
     
-    # Apply layout
-    echo "Applying layout..."
-    if ! load_layout; then
-        echo "No saved layout found. Using default 2x2 grid..."
-        for cmd in "${DEFAULT_LAYOUT[@]}"; do
-            tmux "$cmd" -t "$SESSION_NAME"
-        done
-    fi
-
-    # Start all telnet connections in parallel
+    # Start telnet connections sequentially
     echo "Establishing telnet connections..."
+    connection_failures=0
     for i in {0..3}; do
-        setup_telnet $i &
+        if ! setup_telnet $i; then
+            echo "Warning: Failed to setup telnet connection in pane $i"
+            ((connection_failures++))
+        else
+            echo "Successfully connected telnet in pane $i"
+        fi
     done
 
-    # Wait for all background processes to complete
-    wait
+    # Only exit if all connections failed
+    if [ $connection_failures -eq 4 ]; then
+        echo "Error: All telnet connections failed"
+        tmux kill-session -t "$SESSION_NAME"
+        exit 1
+    elif [ $connection_failures -gt 0 ]; then
+        echo "Warning: Some telnet connections failed but continuing with working ones"
+    fi
 
-    # Final prompt setup to ensure changes took effect
+    # Final prompt refresh - only try if initial setup worked
+    echo "Refreshing prompts..."
     for i in {0..3}; do
-        tmux send-keys -t "$SESSION_NAME:0.$i" C-m
-        tmux send-keys -t "$SESSION_NAME:0.$i" "PS1='[xg118pro-csh-${DISPLAY_NAMES[$i]}:~] # '" C-m
         tmux send-keys -t "$SESSION_NAME:0.$i" C-m
     done
 fi
-
-# Start connection monitoring in the background
-monitor_connections &
-MONITOR_PID=$!
 
 # Save current layout
 save_layout
