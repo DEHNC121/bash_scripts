@@ -1,8 +1,14 @@
 #!/bin/bash
 
-# Script to create a tmux session with 4 panes and connect to telnet sessions
+# Script to create a tmux session with 4 telnet panes in a 2x2 grid layout
+# Features:
+# - Automatic telnet connections to specified ports
+# - Synchronized command input across panes (toggle with Ctrl+b E)
+# - Equal-sized panes in 2x2 grid layout
+# - Session persistence with layout saving
+#
 # Author: DEHNC121
-# Last modified: 2025-07-07
+# Last modified: 2025-07-08
 
 # Exit on any error
 set -e
@@ -25,13 +31,24 @@ create_default_layout() {
     # Start with a single pane
     tmux new-session -d -s "$SESSION_NAME"
     
-    # Split into four panes
-    tmux split-window -v -t "$SESSION_NAME:0.0"
-    tmux split-window -h -t "$SESSION_NAME:0.0"
-    tmux split-window -h -t "$SESSION_NAME:0.2"
+    # Create 2x2 grid
+    tmux split-window -h
+    tmux split-window -v
+    tmux select-pane -t 0
+    tmux split-window -v
     
-    # Select tiled layout
-    tmux select-layout -t "$SESSION_NAME:0" tiled
+    # Make sure all panes are equal size
+    tmux select-layout tiled
+    
+    # Add key binding for synchronization toggle (Ctrl+b E)
+    tmux bind-key E \
+        set-window-option synchronize-panes\; \
+        if-shell 'tmux show-window-option -v synchronize-panes' \
+            'display-message "Sync: ON - Commands will run in all panes"' \
+            'display-message "Sync: OFF - Commands will run only in current pane"'
+    
+    # Select first pane for starting telnet connections
+    tmux select-pane -t "$SESSION_NAME:0.0"
     
     # Give tmux a moment to stabilize
     sleep 1
@@ -174,6 +191,12 @@ fi
 # Check existing session or create new one
 if check_session; then
     echo "Reusing existing session..."
+    # Add key binding for synchronization toggle if reusing session
+    tmux bind-key E \
+        set-window-option synchronize-panes\; \
+        if-shell 'tmux show-window-option -v synchronize-panes' \
+            'display-message "Sync: ON - Commands will run in all panes"' \
+            'display-message "Sync: OFF - Commands will run only in current pane"'
 else
     # Create new tmux session with layout
     echo "Creating new tmux session..."
